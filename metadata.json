@@ -1,0 +1,6 @@
+{
+  "name": "Bemtevi - Rede Social",
+  "description": "Rede social livre e colaborativa Bemtevi, portada para TypeScript com Firebase modular otimizado, feeds, comunidades, chat em tempo real e i18n.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
