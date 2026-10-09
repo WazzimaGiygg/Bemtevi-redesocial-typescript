@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
 import { useAuth } from '../context/AuthContext';
 import { useI18n } from '../i18n';
 import { PostInput } from '../components/PostInput';
@@ -17,6 +18,37 @@ interface FeedViewProps {
   onRequireLogin: () => void;
 }
 
+const listContainerVariants = {
+  hidden: { opacity: 0 },
+  show: {
+    opacity: 1,
+    transition: {
+      staggerChildren: 0.07,
+      delayChildren: 0.05
+    }
+  }
+};
+
+const postItemVariants = {
+  hidden: { opacity: 0, y: 18, scale: 0.98 },
+  show: {
+    opacity: 1,
+    y: 0,
+    scale: 1,
+    transition: {
+      type: 'spring' as const,
+      stiffness: 350,
+      damping: 24,
+      mass: 0.8
+    }
+  },
+  exit: {
+    opacity: 0,
+    scale: 0.96,
+    transition: { duration: 0.2 }
+  }
+};
+
 export const FeedView: React.FC<FeedViewProps> = ({
   currentTab,
   onSelectTab,
@@ -34,6 +66,26 @@ export const FeedView: React.FC<FeedViewProps> = ({
   const [loadingMore, setLoadingMore] = useState(false);
   const [lastDoc, setLastDoc] = useState<DocumentSnapshot | null>(null);
   const [hasMore, setHasMore] = useState(true);
+  const [showScrollTop, setShowScrollTop] = useState(false);
+
+  // Monitor scroll past the first viewport height
+  useEffect(() => {
+    const handleScroll = () => {
+      if (window.scrollY > window.innerHeight) {
+        setShowScrollTop(true);
+      } else {
+        setShowScrollTop(false);
+      }
+    };
+
+    window.addEventListener('scroll', handleScroll, { passive: true });
+    handleScroll();
+    return () => window.removeEventListener('scroll', handleScroll);
+  }, []);
+
+  const scrollToTop = () => {
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
 
   const loadInitialPosts = useCallback(async () => {
     setLoading(true);
@@ -71,7 +123,7 @@ export const FeedView: React.FC<FeedViewProps> = ({
   };
 
   return (
-    <div className="feed-container">
+    <div className="feed-container relative">
       {/* Welcome Hero for Unauthenticated Visitors */}
       {!currentUser && (
         <div className="relative rounded-2xl overflow-hidden mb-6 border border-[#1e2338] shadow-2xl">
@@ -154,8 +206,8 @@ export const FeedView: React.FC<FeedViewProps> = ({
         onRequireLogin={onRequireLogin}
       />
 
-      {/* Posts List */}
-      <div className="posts-container space-y-3">
+      {/* Posts List with Framer Motion Staggered Entrance */}
+      <div className="posts-container">
         {loading ? (
           <div className="py-16 text-center text-neutral-400 text-sm">
             <span className="material-icons animate-spin text-3xl mb-2 text-[#6366f1]">autorenew</span>
@@ -171,19 +223,36 @@ export const FeedView: React.FC<FeedViewProps> = ({
           </div>
         ) : (
           <>
-            {posts.map((post) => (
-              <PostCard
-                key={post.id}
-                post={post}
-                onOpenComments={onOpenComments}
-                onDeleteSuccess={handlePostDeleted}
-                onNavigate={onNavigate}
-                onRequireLogin={onRequireLogin}
-              />
-            ))}
+            <motion.div
+              variants={listContainerVariants}
+              initial="hidden"
+              animate="show"
+              className="space-y-3"
+            >
+              <AnimatePresence mode="popLayout">
+                {posts.map((post) => (
+                  <motion.div
+                    key={post.id}
+                    variants={postItemVariants}
+                    layout
+                    initial="hidden"
+                    animate="show"
+                    exit="exit"
+                  >
+                    <PostCard
+                      post={post}
+                      onOpenComments={onOpenComments}
+                      onDeleteSuccess={handlePostDeleted}
+                      onNavigate={onNavigate}
+                      onRequireLogin={onRequireLogin}
+                    />
+                  </motion.div>
+                ))}
+              </AnimatePresence>
+            </motion.div>
 
             {hasMore && (
-              <div className="text-center pt-3 pb-2">
+              <div className="text-center pt-5 pb-3">
                 <button
                   className="btn-secondary text-xs px-6 py-2.5 rounded-xl border border-[#212640] hover:bg-[#161a2b] text-neutral-300 transition-colors"
                   onClick={loadMorePosts}
@@ -196,6 +265,26 @@ export const FeedView: React.FC<FeedViewProps> = ({
           </>
         )}
       </div>
+
+      {/* Floating 'Scroll to top' button */}
+      <AnimatePresence>
+        {showScrollTop && (
+          <motion.button
+            initial={{ opacity: 0, scale: 0.6, y: 16 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.6, y: 16 }}
+            whileHover={{ scale: 1.08 }}
+            whileTap={{ scale: 0.94 }}
+            transition={{ type: 'spring', stiffness: 400, damping: 25 }}
+            onClick={scrollToTop}
+            className="fixed bottom-20 md:bottom-8 right-6 z-40 w-11 h-11 rounded-full bg-gradient-to-tr from-[#6366f1] to-[#8b5cf6] text-white shadow-xl shadow-indigo-500/30 flex items-center justify-center border border-indigo-400/30 cursor-pointer"
+            title="Voltar ao topo"
+            aria-label="Voltar ao topo"
+          >
+            <span className="material-icons text-xl font-bold">arrow_upward</span>
+          </motion.button>
+        )}
+      </AnimatePresence>
     </div>
   );
 };
