@@ -10,6 +10,7 @@ export interface UserProfile {
   seguidoresCount?: number;
   seguindoCount?: number;
   postsCount?: number;
+  savedPostIds?: string[];
   createdAt?: any;
 }
 

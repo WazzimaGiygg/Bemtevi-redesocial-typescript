@@ -45,6 +45,16 @@ export const PostCard: React.FC<PostCardProps> = ({
       setSaved(false);
     }
     setLikesCount(post.likes || 0);
+
+    const handleBookmarkEvent = (e: Event) => {
+      const customEvt = e as CustomEvent;
+      if (customEvt.detail?.postId === post.id) {
+        setSaved(!!customEvt.detail.isSaved);
+      }
+    };
+
+    window.addEventListener('bemtevi_bookmark_updated', handleBookmarkEvent);
+    return () => window.removeEventListener('bemtevi_bookmark_updated', handleBookmarkEvent);
   }, [post, currentUser]);
 
   const handleLike = async (e: React.MouseEvent) => {
@@ -294,12 +304,20 @@ export const PostCard: React.FC<PostCardProps> = ({
 
         {/* Bookmark */}
         <button
-          className={`stat-action ${saved ? 'text-amber-400' : ''}`}
+          className={`stat-action flex items-center gap-1 transition-all ${
+            saved
+              ? 'text-amber-400 font-semibold'
+              : 'hover:text-amber-300'
+          }`}
           onClick={handleSave}
-          title={saved ? t('actions.unsave') : t('actions.save')}
+          title={saved ? 'Remover dos Salvos (Bookmark)' : 'Salvar nos Marcadores (Bookmark)'}
+          aria-label={saved ? 'Remover bookmark' : 'Adicionar bookmark'}
         >
-          <span className="material-icons text-lg">
+          <span className="material-icons text-lg transition-transform active:scale-125">
             {saved ? 'bookmark' : 'bookmark_border'}
+          </span>
+          <span className="text-[11px] hidden sm:inline">
+            {saved ? 'Salvo' : 'Salvar'}
           </span>
         </button>
       </div>

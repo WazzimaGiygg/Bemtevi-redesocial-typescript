@@ -13,6 +13,7 @@ import {
   orderBy,
   limit,
   startAfter,
+  onSnapshot,
   serverTimestamp,
   increment,
   arrayUnion,
@@ -186,26 +187,91 @@ export async function toggleLikePost(postId: string, userId: string, postAuthorI
 
 export async function toggleSavePost(postId: string, userId: string): Promise<boolean> {
   const savedRef = doc(db, 'usuarios', userId, 'savedPosts', postId);
-  const snap = await getDoc(savedRef);
+  const userProfileRef = doc(db, 'usuarios', userId);
 
-  if (snap.exists()) {
-    await deleteDoc(savedRef);
-    return false; // Removed
-  } else {
-    await setDoc(savedRef, {
-      savedAt: serverTimestamp()
-    });
-    return true; // Saved
+  let isSaved = false;
+
+  try {
+    const snap = await getDoc(savedRef);
+
+    if (snap.exists()) {
+      await deleteDoc(savedRef);
+      // Remove post ID from the user's Firestore profile
+      await updateDoc(userProfileRef, {
+        savedPostIds: arrayRemove(postId)
+      }).catch(() => {});
+      isSaved = false;
+    } else {
+      await setDoc(savedRef, {
+        postId,
+        savedAt: serverTimestamp()
+      });
+      // Save post ID to the user's Firestore profile
+      await updateDoc(userProfileRef, {
+        savedPostIds: arrayUnion(postId)
+      }).catch(() => {});
+      isSaved = true;
+    }
+  } catch (err) {
+    console.warn('Firestore toggleSavePost error, falling back to local session:', err);
+    // Local storage fallback for guests or offline
+    const localKey = `bemtevi_saved_${userId}`;
+    const localSaved: string[] = JSON.parse(localStorage.getItem(localKey) || '[]');
+    if (localSaved.includes(postId)) {
+      const updated = localSaved.filter((id) => id !== postId);
+      localStorage.setItem(localKey, JSON.stringify(updated));
+      isSaved = false;
+    } else {
+      localSaved.unshift(postId);
+      localStorage.setItem(localKey, JSON.stringify(localSaved));
+      isSaved = true;
+    }
   }
+
+  // Also maintain local cache mirror for instant zero-latency sync
+  const localKey = `bemtevi_saved_${userId}`;
+  const localSaved: string[] = JSON.parse(localStorage.getItem(localKey) || '[]');
+  if (isSaved && !localSaved.includes(postId)) {
+    localSaved.unshift(postId);
+    localStorage.setItem(localKey, JSON.stringify(localSaved));
+  } else if (!isSaved && localSaved.includes(postId)) {
+    const updated = localSaved.filter((id) => id !== postId);
+    localStorage.setItem(localKey, JSON.stringify(updated));
+  }
+
+  // Broadcast event across app for instant synchronization
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(
+      new CustomEvent('bemtevi_bookmark_updated', {
+        detail: { postId, userId, isSaved }
+      })
+    );
+  }
+
+  return isSaved;
 }
 
 export async function checkIfPostSaved(postId: string, userId: string): Promise<boolean> {
   try {
+    // Check local mirror first for instant response
+    const localKey = `bemtevi_saved_${userId}`;
+    const localSaved: string[] = JSON.parse(localStorage.getItem(localKey) || '[]');
+    if (localSaved.includes(postId)) return true;
+
     const snap = await getDoc(doc(db, 'usuarios', userId, 'savedPosts', postId));
-    return snap.exists();
+    if (snap.exists()) {
+      if (!localSaved.includes(postId)) {
+        localSaved.push(postId);
+        localStorage.setItem(localKey, JSON.stringify(localSaved));
+      }
+      return true;
+    }
   } catch {
-    return false;
+    const localKey = `bemtevi_saved_${userId}`;
+    const localSaved: string[] = JSON.parse(localStorage.getItem(localKey) || '[]');
+    return localSaved.includes(postId);
   }
+  return false;
 }
 
 // Optimized batch fetch of saved posts
@@ -215,9 +281,25 @@ export async function getSavedPosts(userId: string): Promise<Post[]> {
       query(collection(db, 'usuarios', userId, 'savedPosts'), orderBy('savedAt', 'desc'), limit(50))
     );
 
-    if (savedSnap.empty) return [];
+    let postIds = savedSnap.docs.map((d) => d.id);
 
-    const postIds = savedSnap.docs.map((d) => d.id);
+    // If Firestore subcollection was empty, check user document savedPostIds or localStorage
+    if (postIds.length === 0) {
+      try {
+        const userDoc = await getDoc(doc(db, 'usuarios', userId));
+        if (userDoc.exists() && Array.isArray(userDoc.data().savedPostIds)) {
+          postIds = userDoc.data().savedPostIds;
+        }
+      } catch {}
+
+      if (postIds.length === 0) {
+        const localSaved: string[] = JSON.parse(localStorage.getItem(`bemtevi_saved_${userId}`) || '[]');
+        postIds = localSaved;
+      }
+    }
+
+    if (postIds.length === 0) return [];
+
     const posts: Post[] = [];
 
     // Chunk into batches of 10 for documentId() 'in' query (Firestore max 30)
@@ -246,11 +328,68 @@ export async function getSavedPosts(userId: string): Promise<Post[]> {
       });
     }
 
+    // Preserve the saved order
+    const orderMap = new Map(postIds.map((id, index) => [id, index]));
+    posts.sort((a, b) => (orderMap.get(a.id) ?? 999) - (orderMap.get(b.id) ?? 999));
+
     return posts;
   } catch (err) {
     console.error('Erro ao buscar posts salvos:', err);
     return [];
   }
+}
+
+// Real-time synchronization subscription for SavedPostsView
+export function subscribeToSavedPosts(
+  userId: string,
+  onUpdate: (posts: Post[]) => void
+): () => void {
+  let isMounted = true;
+
+  const refreshPosts = async () => {
+    const list = await getSavedPosts(userId);
+    if (isMounted) onUpdate(list);
+  };
+
+  // Initial load
+  refreshPosts();
+
+  // Listen to Firestore real-time changes
+  let firestoreUnsub: (() => void) | null = null;
+  try {
+    const q = query(
+      collection(db, 'usuarios', userId, 'savedPosts'),
+      orderBy('savedAt', 'desc'),
+      limit(50)
+    );
+    firestoreUnsub = onSnapshot(
+      q,
+      () => {
+        refreshPosts();
+      },
+      (err: any) => {
+        console.warn('Realtime savedPosts listener error:', err);
+      }
+    );
+  } catch (e) {
+    console.warn('Could not attach firestore snapshot for savedPosts:', e);
+  }
+
+  // Also listen to local cross-component bookmark event for zero-latency sync
+  const handleBookmarkEvent = (e: Event) => {
+    const customEvt = e as CustomEvent;
+    if (customEvt.detail?.userId === userId || !customEvt.detail?.userId) {
+      refreshPosts();
+    }
+  };
+
+  window.addEventListener('bemtevi_bookmark_updated', handleBookmarkEvent);
+
+  return () => {
+    isMounted = false;
+    if (firestoreUnsub) firestoreUnsub();
+    window.removeEventListener('bemtevi_bookmark_updated', handleBookmarkEvent);
+  };
 }
 
 export async function deletePost(postId: string, userId: string): Promise<boolean> {
